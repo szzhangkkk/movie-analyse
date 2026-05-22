@@ -1,8 +1,9 @@
 import os
+from collections import OrderedDict
 
 os.environ["OMP_NUM_THREADS"] = "1"
 import requests
-from PIL import Image, ImageFilter, ImageStat
+from PIL import Image
 from io import BytesIO
 import numpy as np
 from sklearn.cluster import KMeans
@@ -11,12 +12,16 @@ from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 import colorsys
 import urllib3
-import math
+import logging
 import cv2
 
-MY_PROXY_PORT = 7897
+logger = logging.getLogger(__name__)
+
+PROXY_PORT = os.environ.get("PROXY_PORT", "")
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-URL_CACHE = {}
+
+URL_CACHE_MAX = 500
+URL_CACHE = OrderedDict()
 
 try:
     face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
@@ -25,23 +30,27 @@ except:
 
 
 def get_dominant_colors(img_array, k=3):
-    """提取 Top K 主色调"""
+    """提取 Top K 主色调，不足 k 个时用零向量填充"""
     try:
         kmeans = KMeans(n_clusters=k, n_init=5, random_state=42)
         kmeans.fit(img_array)
         centers = kmeans.cluster_centers_
-        # 计算每个聚类的权重 (像素数量)
         labels = kmeans.labels_
-        counts = np.bincount(labels)
+        counts = np.bincount(labels, minlength=k)
         total = np.sum(counts)
 
-        # 按权重排序
         sorted_indices = np.argsort(counts)[::-1]
         top_centers = centers[sorted_indices]
         top_ratios = counts[sorted_indices] / total
 
-        return top_centers, top_ratios
-    except:
+        # 补齐不足 k 个聚类中心的情况（如纯色图片）
+        if len(top_centers) < k:
+            pad = k - len(top_centers)
+            top_centers = np.vstack([top_centers, np.zeros((pad, 3))])
+            top_ratios = np.concatenate([top_ratios, np.zeros(pad)])
+
+        return top_centers[:k], top_ratios[:k]
+    except Exception:
         return np.zeros((k, 3)), np.zeros(k)
 
 
@@ -138,14 +147,17 @@ def process_single_row(row_data):
         url = "https://image.tmdb.org/t/p/w500" + (url if url.startswith('/') else '/' + url)
 
     if url in URL_CACHE:
+        URL_CACHE.move_to_end(url)
         row_data.update(URL_CACHE[url])
         return row_data
 
     try:
-        proxies = {
-            "http": f"http://127.0.0.1:{MY_PROXY_PORT}",
-            "https": f"http://127.0.0.1:{MY_PROXY_PORT}",
-        }
+        proxies = None
+        if PROXY_PORT:
+            proxies = {
+                "http": f"http://127.0.0.1:{PROXY_PORT}",
+                "https": f"http://127.0.0.1:{PROXY_PORT}",
+            }
         headers = {'User-Agent': 'Mozilla/5.0'}
 
         response = requests.get(url, headers=headers, proxies=proxies, timeout=10, verify=False)
@@ -165,6 +177,8 @@ def process_single_row(row_data):
         features['Bright_Std'] = 0  # 占位
 
         URL_CACHE[url] = features
+        if len(URL_CACHE) > URL_CACHE_MAX:
+            URL_CACHE.popitem(last=False)
         row_data.update(features)
         return row_data
 
@@ -173,7 +187,7 @@ def process_single_row(row_data):
 
 
 def process_images(df, sample_num=1000):
-    print(f"[2/5] 正在提取海报特征 (包含配色/排版/构图/纹理 20+维特征)...")
+    logger.info("正在提取海报特征 (包含配色/排版/构图/纹理 20+维特征)")
     tasks = df.to_dict('records')
     results = []
 

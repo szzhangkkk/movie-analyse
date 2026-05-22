@@ -1,3 +1,5 @@
+import logging
+
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, VotingClassifier
 from sklearn.metrics import accuracy_score, confusion_matrix
@@ -7,46 +9,45 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
 
+logger = logging.getLogger(__name__)
+
+
+def map_visual_genre(row):
+    """将电影类型映射为视觉流派"""
+    genres = str(row.get('Genres', row['Main_Genre']))
+    if 'Animation' in genres:
+        return 'Animation (动画)'
+    elif 'Horror' in genres or 'Thriller' in genres:
+        return 'Thriller_Horror (惊悚/恐怖)'
+    elif 'Sci-Fi' in genres:
+        return 'Sci-Fi (科幻)'
+    elif 'Action' in genres or 'Crime' in genres or 'Adventure' in genres:
+        return 'Action_Adventure (动作/冒险)'
+    elif 'Comedy' in genres:
+        return 'Comedy (喜剧)'
+    elif 'Drama' in genres or 'Biography' in genres or 'Romance' in genres:
+        return 'Drama_Romance (剧情/情感)'
+    else:
+        return 'Other'
+
 
 class MLProcessor:
     def __init__(self, df):
         self.df = df.copy()
-
-    def plot_error_analysis(self, X_test, y_test, y_pred, feature_names):
-        # 简化版错误分析，防止画图过多
-        pass
+        self._cm_data = None
 
     def run_classifier(self):
-        print("\n[机器学习] 正在进行智能视觉流派分类...")
+        logger.info("正在进行智能视觉流派分类")
 
-        # 1. 归类
-        def map_visual_genre_smart(row):
-            genres = str(row.get('Genres', row['Main_Genre']))
-            if 'Animation' in genres:
-                return 'Animation (动画)'
-            elif 'Horror' in genres or 'Thriller' in genres:
-                return 'Thriller_Horror (惊悚/恐怖)'
-            elif 'Sci-Fi' in genres:
-                return 'Sci-Fi (科幻)'
-            elif 'Action' in genres or 'Crime' in genres or 'Adventure' in genres:
-                return 'Action_Adventure (动作/冒险)'
-            elif 'Comedy' in genres:
-                return 'Comedy (喜剧)'
-            elif 'Drama' in genres or 'Biography' in genres or 'Romance' in genres:
-                return 'Drama_Romance (剧情/情感)'
-            else:
-                return 'Other'
+        self.df['Visual_Type'] = self.df.apply(map_visual_genre, axis=1)
 
-        self.df['Visual_Type'] = self.df.apply(map_visual_genre_smart, axis=1)
-
-        # 过滤有效数据
         counts = self.df['Visual_Type'].value_counts()
         valid_types = counts[counts > 20].index
         df_clean = self.df[self.df['Visual_Type'].isin(valid_types)].copy()
 
-        print(f"\n    🎯 分析流派: {list(valid_types)}")
+        logger.info("分析流派: %s", list(valid_types))
 
-        # 2. 平衡
+        # 上采样平衡
         max_size = df_clean['Visual_Type'].value_counts().max()
         df_balanced_list = []
         for g in df_clean['Visual_Type'].unique():
@@ -55,7 +56,6 @@ class MLProcessor:
             df_balanced_list.append(df_g_upsampled)
         df_balanced = pd.concat(df_balanced_list)
 
-        # 3. 特征
         features = [
             'Hue_1', 'Sat_1', 'Val_1', 'Color_Ratio_1', 'Vibrancy_Ratio', 'Warm_Rating',
             'Edge_Density', 'Entropy', 'Text_Texture_Ratio',
@@ -67,7 +67,7 @@ class MLProcessor:
 
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
 
-        # 4. 训练 Voting
+        # 训练投票分类器
         clf1 = RandomForestClassifier(n_estimators=300, max_depth=20, random_state=42)
         clf2 = GradientBoostingClassifier(n_estimators=200, learning_rate=0.1, max_depth=5, random_state=42)
         eclf = VotingClassifier(estimators=[('rf', clf1), ('gb', clf2)], voting='soft')
@@ -76,11 +76,32 @@ class MLProcessor:
         y_pred = eclf.predict(X_test)
         y_proba = eclf.predict_proba(X_test)
         acc = accuracy_score(y_test, y_pred)
-        print(f"\n    🚀 模型准确率: {acc:.2f}")
+        logger.info("模型准确率: %.2f", acc)
 
-        # 5. 混淆矩阵
+        # 保存混淆矩阵数据供后续绘图
         labels = sorted(df_balanced['Visual_Type'].unique())
         cm = confusion_matrix(y_test, y_pred, labels=labels, normalize='true')
+        self._cm_data = (cm, labels)
+
+        # 准备结果
+        result_df = X_test.copy()
+        result_df['True_Label'] = y_test
+        result_df['Pred_Label'] = y_pred
+        result_df['Confidence'] = np.max(y_proba, axis=1)
+        result_df['Is_Correct'] = y_test == y_pred
+
+        logger.info("正在提取特征重要性")
+        rf_viz = RandomForestClassifier(n_estimators=300, max_depth=20, random_state=42)
+        rf_viz.fit(X_train, y_train)
+
+        return result_df, valid_features, rf_viz
+
+    def plot_confusion_matrix(self):
+        """绘制归一化混淆矩阵（从 run_classifier 分离）"""
+        if self._cm_data is None:
+            return
+        cm, labels = self._cm_data
+
         plt.figure(figsize=(10, 8))
         plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei']
         sns.heatmap(cm, annot=True, fmt='.2%', cmap='Greens', xticklabels=labels, yticklabels=labels)
@@ -89,17 +110,3 @@ class MLProcessor:
         plt.yticks(rotation=0)
         plt.tight_layout()
         plt.show()
-
-        # 6. 准备数据返回
-        result_df = X_test.copy()
-        result_df['True_Label'] = y_test
-        result_df['Pred_Label'] = y_pred
-        result_df['Confidence'] = np.max(y_proba, axis=1)
-        result_df['Is_Correct'] = y_test == y_pred
-
-        # ✅ 关键：专门训练一个 RF 用于特征重要性展示
-        print("    🔧 正在提取特征重要性...")
-        rf_viz = RandomForestClassifier(n_estimators=300, max_depth=20, random_state=42)
-        rf_viz.fit(X_train, y_train)
-
-        return result_df, valid_features, rf_viz

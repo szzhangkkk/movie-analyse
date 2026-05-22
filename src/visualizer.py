@@ -1,3 +1,5 @@
+import logging
+
 import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
@@ -6,19 +8,20 @@ from math import pi
 from sklearn.manifold import TSNE
 from sklearn.preprocessing import MinMaxScaler
 
+logger = logging.getLogger(__name__)
+
 
 class Visualizer:
     def __init__(self, df):
         self.df = df
         sns.set(style="whitegrid")
-        # 字体设置
         plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode MS', 'Malgun Gothic']
         plt.rcParams['axes.unicode_minus'] = False
         self.palette = sns.color_palette("Set2")
 
     def plot_basic_stats(self):
         """基础概览图"""
-        print("    正在绘制数据初始分布概览...")
+        logger.info("正在绘制数据初始分布概览")
         fig = plt.figure(figsize=(16, 14))
 
         ax1 = fig.add_subplot(2, 2, 1)
@@ -54,7 +57,7 @@ class Visualizer:
 
     def plot_violin_distribution(self):
         """小提琴图"""
-        print("    正在绘制特征分布小提琴图...")
+        logger.info("正在绘制特征分布小提琴图")
         key_features = ['Vibrancy_Ratio', 'Edge_Density', 'Face_Ratio']
         labels = ['鲜艳度', '纹理密度', '人脸占比']
 
@@ -82,8 +85,8 @@ class Visualizer:
         plt.show()
 
     def plot_correlation_heatmap(self):
-        """【已修复】热力图：完整显示正方形，修复切边问题"""
-        print("    正在绘制特征相关性热力图...")
+        """热力图：完整显示正方形，修复切边问题"""
+        logger.info("正在绘制特征相关性热力图")
         features = ['Hue_1', 'Sat_1', 'Val_1', 'Vibrancy_Ratio', 'Warm_Rating',
                     'Edge_Density', 'Entropy', 'Face_Ratio', 'Rule_of_Thirds_Score']
         valid_features = [f for f in features if f in self.df.columns]
@@ -93,13 +96,11 @@ class Visualizer:
         # 增加高度，给上下标签留空间
         plt.figure(figsize=(12, 11))
 
-        # ❌ 去掉遮罩 (mask=None)，显示完整正方形，这样第一行和最后一行都不会缺
         ax = sns.heatmap(corr, annot=True, fmt=".2f", cmap='coolwarm',
                          vmax=1, vmin=-1, square=True, linewidths=.5,
                          annot_kws={"size": 10}, cbar_kws={"shrink": 0.8})
 
-        # ✅ 强制修复 matplotlib 切边 bug (手动设置 y 轴范围)
-        # 有些版本如果不加这句，第一行和最后一行只显示一半
+        # 修复 matplotlib 切边 bug，手动设置 y 轴范围
         ax.set_ylim(len(corr), 0)
 
         plt.title('视觉特征相关性矩阵', fontsize=18, pad=20)
@@ -115,7 +116,7 @@ class Visualizer:
 
     def plot_error_scatter(self, result_df):
         """误差散点图"""
-        print("    正在绘制误差分析散点图...")
+        logger.info("正在绘制误差分析散点图")
         fig, ax = plt.subplots(figsize=(14, 9))
 
         correct = result_df[result_df['Is_Correct'] == True]
@@ -136,7 +137,7 @@ class Visualizer:
 
     def plot_feature_importance(self, model, feature_names):
         """特征重要性"""
-        print("    正在绘制特征重要性排行...")
+        logger.info("正在绘制特征重要性排行")
         if model is None or not hasattr(model, 'feature_importances_'): return
 
         importances = model.feature_importances_
@@ -155,7 +156,7 @@ class Visualizer:
 
     def plot_tsne_cluster(self):
         """t-SNE"""
-        print("    正在绘制 t-SNE 聚类地图...")
+        logger.info("正在绘制 t-SNE 聚类地图")
         try:
             numeric_cols = self.df.select_dtypes(include=[np.number]).columns.tolist()
             drop_cols = ['id', 'vote_average', 'vote_count', 'popularity', 'budget', 'revenue', 'runtime']
@@ -181,11 +182,11 @@ class Visualizer:
             plt.subplots_adjust(right=0.75, top=0.9)
             plt.show()
         except Exception as e:
-            print(f"t-SNE 绘制跳过: {e}")
+            logger.warning("t-SNE 绘制跳过: %s", e)
 
     def plot_comparative_radar(self, genre_a, genre_b):
         """雷达图"""
-        print(f"    正在绘制对比雷达图: {genre_a} vs {genre_b}...")
+        logger.info("正在绘制对比雷达图: %s vs %s", genre_a, genre_b)
         features = ['Brightness', 'Vibrancy_Ratio', 'Warm_Rating', 'Edge_Density', 'Entropy', 'Face_Ratio',
                     'Rule_of_Thirds_Score']
         feature_names = ['亮度', '鲜艳度', '暖色调', '纹理密度', '复杂度', '人脸占比', '构图分']

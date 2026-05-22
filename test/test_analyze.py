@@ -3,63 +3,98 @@ from unittest.mock import patch, MagicMock
 from PIL import Image
 from io import BytesIO
 import numpy as np
-from src.poster_analyzer import get_hsv_features
-#使用 Mock (模拟) 技术。我们要欺骗程序，让它以为下载了一张图片，实际上是我们塞给它的一个红色的像素点。
+import cv2
+
+from src.poster_analyzer import get_visual_features, process_single_row
+
+
 class TestPosterAnalyzer(unittest.TestCase):
 
-    def create_dummy_image(self):
-        """创建一个 50x50 的纯红色图片用于测试"""
-        # RGB: (255, 0, 0) -> 纯红
+    def create_dummy_image_pil(self):
+        """创建一个 50x50 的纯红色 PIL 图片"""
+        return Image.new('RGB', (50, 50), color=(255, 0, 0))
+
+    def create_dummy_image_bytes(self):
+        """创建一个 50x50 的纯红色图片的字节数据"""
         img = Image.new('RGB', (50, 50), color=(255, 0, 0))
-        img_byte_arr = BytesIO()
-        img.save(img_byte_arr, format='JPEG')
-        return img_byte_arr.getvalue()
+        buf = BytesIO()
+        img.save(buf, format='JPEG')
+        return buf.getvalue()
+
+    def test_get_visual_features_returns_all_keys(self):
+        """测试 get_visual_features 返回所有预期的特征键"""
+        img_pil = self.create_dummy_image_pil()
+        img_cv2 = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
+
+        features = get_visual_features(img_pil, img_cv2)
+
+        self.assertIsNotNone(features)
+        expected_keys = [
+            'Hue_1', 'Sat_1', 'Val_1', 'Vibrancy_Ratio', 'Warm_Rating',
+            'Edge_Density', 'Entropy', 'Text_Texture_Ratio',
+            'Rule_of_Thirds_Score', 'Face_Count', 'Face_Ratio',
+        ]
+        for key in expected_keys:
+            self.assertIn(key, features, f"缺少特征: {key}")
+
+    def test_get_visual_features_red_image_values(self):
+        """纯红色图片的 HSV 特征值应合理"""
+        img_pil = self.create_dummy_image_pil()
+        img_cv2 = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
+
+        features = get_visual_features(img_pil, img_cv2)
+
+        # 纯红色：Hue 接近 0, Sat 接近 1, Val 接近 1
+        self.assertAlmostEqual(features['Hue_1'], 0.0, places=1)
+        self.assertAlmostEqual(features['Sat_1'], 1.0, places=1)
+        self.assertAlmostEqual(features['Val_1'], 1.0, places=1)
+
+    def test_get_visual_features_edge_density_non_negative(self):
+        """边缘密度应为非负值"""
+        img_pil = self.create_dummy_image_pil()
+        img_cv2 = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
+
+        features = get_visual_features(img_pil, img_cv2)
+
+        self.assertGreaterEqual(features['Edge_Density'], 0)
+        self.assertGreaterEqual(features['Entropy'], 0)
 
     @patch('src.poster_analyzer.requests.get')
-    def test_get_hsv_features(self, mock_get):
-        """
-        测试颜色提取功能
-        @patch 装饰器把 requests.get 变成了模拟对象 mock_get
-        """
-
-        # 1. 设定剧本：当代码调用 requests.get 时，返回什么？
-        # 我们让它返回状态码 200，内容是我们造的假图片
+    def test_process_single_row_success(self, mock_get):
+        """测试 process_single_row 正常下载并提取特征"""
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.content = self.create_dummy_image()
+        mock_response.content = self.create_dummy_image_bytes()
         mock_get.return_value = mock_response
 
-        # 2. 运行你的函数 (传入一个假网址)
-        result = get_hsv_features('http://fake-url.com/img.jpg')
+        row = {'Poster': 'http://fake-url.com/img.jpg', 'Main_Genre': 'Drama'}
+        result = process_single_row(row)
 
-        # 3. 验证结果
-        # 纯红色的 HSV 应该是：H=0 (或接近0), S=1.0, V=1.0
         self.assertIsNotNone(result)
-
-        # 验证亮度 (Brightness)
-        # 因为我们造的是最亮的红色，亮度应该是 1.0
-        self.assertAlmostEqual(result['Brightness'], 1.0, places=1, msg="亮度提取错误")
-
-        # 验证饱和度 (Saturation)
-        self.assertAlmostEqual(result['Saturation'], 1.0, places=1, msg="饱和度提取错误")
-
-        print("✅ 图片分析模块测试通过 (Mock 模拟下载成功)")
+        self.assertIn('Hue_1', result)
+        self.assertIn('Edge_Density', result)
 
     @patch('src.poster_analyzer.requests.get')
-    def test_download_failure(self, mock_get):
-        """测试：如果下载失败了，程序会崩吗？"""
-
-        # 设定剧本：模拟 404 错误
+    def test_process_single_row_download_failure(self, mock_get):
+        """测试下载失败时返回 None"""
         mock_response = MagicMock()
         mock_response.status_code = 404
         mock_get.return_value = mock_response
 
-        # 运行函数
-        result = get_hsv_features('http://bad-url.com')
+        row = {'Poster': 'http://bad-url.com/img.jpg', 'Main_Genre': 'Drama'}
+        result = process_single_row(row)
 
-        # 验证：应该返回 None，而不是报错崩溃
-        self.assertIsNone(result, "下载失败时应该返回 None")
-        print("✅ 异常处理测试通过")
+        self.assertIsNone(result)
+
+    def test_process_single_row_no_poster(self):
+        """测试没有海报 URL 时返回 None"""
+        row = {'Poster': None, 'Main_Genre': 'Drama'}
+        result = process_single_row(row)
+        self.assertIsNone(result)
+
+        row2 = {'Poster': float('nan'), 'Main_Genre': 'Drama'}
+        result2 = process_single_row(row2)
+        self.assertIsNone(result2)
 
 
 if __name__ == '__main__':
